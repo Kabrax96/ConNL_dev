@@ -1,0 +1,253 @@
+
+"""
+ETL for the annual cumulative (CP) Balance Presupuestario - LDF file.
+Reads: formato_4_balance_presupuestario_-_ldf_cpYYYY.xlsx (sheet "F4 BAP")
+Transforms to long format and loads into Postgres using your existing pattern.
+"""
+
+import os
+import re
+import uuid
+import base64
+import logging
+from io import BytesIO
+from typing import Tuple, Optional, List
+
+import pandas as pd
+import boto3
+
+from sqlalchemy import MetaData, Table, Column, String, Float
+from sqlalchemy import text as sa_text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+# Reuse your existing client and helpers
+from app.etl_central.connectors.postgresql import PostgreSqlClient
+# These helpers live in your trimestral module; we keep their original names
+from app.etl_central.assets.balance_presupuestario_cp import (
+    extraer_codigo_y_sublabel,
+    clean_amount,
+)
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
+
+# ---------------------------------------------------------------------
+# Utils
+# ---------------------------------------------------------------------
+def _generate_surrogate_key() -> str:
+    """High-entropy urlsafe surrogate key (base64 without trailing '=')."""
+    raw = uuid.uuid4().bytes + os.urandom(16)
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+
+
+def get_target_table(metadata: MetaData) -> Table:
+    """Same target table you use for trimestral; change here only if you want a separate CP table."""
+    return Table(
+        "nuevo_leon_balance_presupuestario",
+        metadata,
+        Column("surrogate_key", String, primary_key=True),
+        Column("concept", String),
+        Column("sublabel", String),
+        Column("year_quarter", String),
+        Column("full_date", String),
+        Column("type", String),
+        Column("amount", Float),
+    )
+
+
+# ---------------------------------------------------------------------
+# Extraction (CP)
+# ---------------------------------------------------------------------
+def extract_cp_data(
+    year: int,
+    source: str = "local",  # "local" | "s3"
+    bucket_name: Optional[str] = None,
+    prefix: str = "finanzas/Balance_Presupuestario/raw/",
+) -> Tuple[pd.DataFrame, Optional[str]]:
+    """
+    Read the annual cumulative CP file for the given year.
+    Expected name: formato_4_balance_presupuestario_-_ldf_cpYYYY.xlsx
+    Sheet: 'F4 BAP'
+    """
+    cp_filename = f"formato_4_balance_presupuestario_-_ldf_cp{year}.xlsx"
+
+    if source == "local":
+        # Local path: app/etl_central/assets/data/presupuestos/...
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        data_dir = os.path.abspath(os.path.join(base_dir, "..", "data", "presupuestos"))
+        file_path = os.path.join(data_dir, cp_filename)
+        if not os.path.exists(file_path):
+            logging.warning("Local file not found: %s", file_path)
+            return pd.DataFrame(), None
+        try:
+            df = pd.read_excel(file_path, sheet_name="F4 BAP", header=None)
+            return df, file_path
+        except Exception as e:
+            logging.error("Error reading Excel %s: %s", file_path, e)
+            return pd.DataFrame(), None
+
+    elif source == "s3":
+        if not bucket_name:
+            raise ValueError("bucket_name is required for source='s3'")
+        s3_key = f"{prefix.rstrip('/')}/{cp_filename}"
+        try:
+            s3 = boto3.client("s3")
+            obj = s3.get_object(Bucket=bucket_name, Key=s3_key)
+            df = pd.read_excel(BytesIO(obj["Body"].read()), sheet_name="F4 BAP", header=None)
+            return df, f"s3://{bucket_name}/{s3_key}"
+        except Exception as e:
+            logging.error("Failed to read s3://%s/%s. Error: %s", bucket_name, s3_key, e)
+            return pd.DataFrame(), None
+
+    else:
+        raise ValueError("Invalid source. Use 'local' or 's3'.")
+
+
+def find_all_cp_years(
+    bucket_name: str = "centralfiles3",
+    prefix: str = "finanzas/Balance_Presupuestario/raw/",
+) -> List[int]:
+    """
+    List all available CP YEARS in S3.
+    Pattern: formato_4_balance_presupuestario_-_ldf_cpYYYY.xlsx
+    """
+    s3 = boto3.client("s3")
+    paginator = s3.get_paginator("list_objects_v2")
+    pattern = re.compile(r"formato_4_balance_presupuestario_-_ldf_cp(\d{4})\.xlsx", re.IGNORECASE)
+
+    years: List[int] = []
+    for page in paginator.paginate(Bucket=bucket_name, Prefix=prefix):
+        for obj in page.get("Contents", []):
+            filename = obj["Key"].split("/")[-1]
+            m = pattern.match(filename)
+            if m:
+                years.append(int(m.group(1)))
+    return sorted(set(years))
+
+
+# ---------------------------------------------------------------------
+# Transform (CP)
+# ---------------------------------------------------------------------
+def transform_cp_data(df: pd.DataFrame, year: int) -> pd.DataFrame:
+    """
+    Same logic as trimestral with minimal changes:
+      - year_quarter = f"{year}_CP"
+      - full_date    = f"{year}-12-31"
+    Output columns: surrogate_key, concept, sublabel, year_quarter, full_date, type, amount
+    """
+    if df.empty:
+        return pd.DataFrame(columns=["surrogate_key", "concept", "sublabel", "year_quarter", "full_date", "type", "amount"])
+
+    year_quarter = f"{year}_CP"
+    full_date = f"{year}-12-31"
+
+    # Keep the same pattern you use for trimestral (exclude aggregate A., B., C., etc.)
+    pattern = r"^(A[123]|B[12]|C[12]|E[12]|F[12]|G[12])\."
+    mask = df[1].astype(str).str.match(pattern, na=False)
+    df_codes = df[mask].copy()
+
+    # Deduplicate by code
+    df_codes["code"] = df_codes[1].str.extract(pattern)
+    df_unique = df_codes.drop_duplicates(subset="code", keep="first").drop(columns="code")
+
+    # Useful columns: col 1 = text; cols 2/3/4 = amounts
+    df_final = df_unique.iloc[:, 1:].reset_index(drop=True)
+    df_final.columns = ["raw_concept", "estimated_or_approved", "devengado", "recaudado_pagado"]
+
+    # Split concept/sublabel using your existing helper
+    df_final[["concept", "sublabel"]] = df_final["raw_concept"].apply(
+        lambda x: pd.Series(extraer_codigo_y_sublabel(str(x)))
+    )
+    df_final.drop(columns=["raw_concept"], inplace=True)
+
+    # Long format
+    df_long = df_final.melt(
+        id_vars=["concept", "sublabel"],
+        value_vars=["estimated_or_approved", "devengado", "recaudado_pagado"],
+        var_name="type",
+        value_name="amount",
+    )
+
+    df_long["year_quarter"] = year_quarter
+    df_long["full_date"] = full_date
+    df_long = df_long[["concept", "sublabel", "year_quarter", "full_date", "type", "amount"]]
+
+    # Amount cleanup
+    df_long["amount"] = df_long["amount"].apply(clean_amount)
+
+    # Surrogate key
+    df_long["surrogate_key"] = [_generate_surrogate_key() for _ in range(len(df_long))]
+
+    # Final order
+    df_long = df_long[["surrogate_key", "concept", "sublabel", "year_quarter", "full_date", "type", "amount"]]
+    return df_long
+
+
+# ---------------------------------------------------------------------
+# Load (same pattern you already use)
+# ---------------------------------------------------------------------
+def load(
+    df: pd.DataFrame,
+    postgresql_client: PostgreSqlClient,
+    table: Table,
+    metadata: MetaData,
+    load_method: str = "upsert",
+) -> None:
+    """Generic load entrypoint leveraging your PostgreSqlClient helpers."""
+    if load_method == "insert":
+        postgresql_client.insert(data=df.to_dict(orient="records"), table=table, metadata=metadata)
+    elif load_method == "upsert":
+        postgresql_client.upsert(data=df.to_dict(orient="records"), table=table, metadata=metadata)
+    elif load_method == "overwrite":
+        postgresql_client.overwrite(data=df.to_dict(orient="records"), table=table, metadata=metadata)
+    else:
+        raise ValueError("Invalid load method: choose from [insert, upsert, overwrite]")
+
+
+def single_upsert(
+    df: pd.DataFrame,
+    postgresql_client: PostgreSqlClient,
+    table: Table,
+    metadata: MetaData,
+) -> None:
+    """
+    Incremental UPSERT by surrogate_key using pg_insert(...).on_conflict_do_update(...).
+    """
+    try:
+        metadata.create_all(postgresql_client.engine)
+        with postgresql_client.engine.connect() as conn:
+            insert_stmt = pg_insert(table).values(df.to_dict(orient="records"))
+            update_stmt = insert_stmt.on_conflict_do_update(
+                index_elements=["surrogate_key"],
+                set_={
+                    "concept": insert_stmt.excluded.concept,
+                    "sublabel": insert_stmt.excluded.sublabel,
+                    "year_quarter": insert_stmt.excluded.year_quarter,
+                    "full_date": insert_stmt.excluded.full_date,
+                    "type": insert_stmt.excluded.type,
+                    "amount": insert_stmt.excluded.amount,
+                },
+            )
+            conn.execute(update_stmt)
+            conn.commit()
+    except Exception as e:
+        raise RuntimeError(f"Single upsert failed: {e}")
+
+
+def bulk_overwrite(
+    df: pd.DataFrame,
+    postgresql_client: PostgreSqlClient,
+    table: Table,
+    metadata: MetaData,
+) -> None:
+    """
+    TRUNCATE + INSERT. Use only for full historical reloads.
+    """
+    try:
+        metadata.create_all(postgresql_client.engine)
+        with postgresql_client.engine.connect() as conn:
+            conn.execute(sa_text(f"TRUNCATE TABLE {table.name};"))
+            conn.execute(table.insert(), df.to_dict(orient="records"))
+            conn.commit()
+    except Exception as e:
+        raise RuntimeError(f"Bulk overwrite failed: {e}")
