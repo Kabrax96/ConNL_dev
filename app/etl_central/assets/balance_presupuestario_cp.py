@@ -1,10 +1,5 @@
 
-"""
-ETL for the annual cumulative (CP) Balance Presupuestario - LDF file.
-Reads: formato_4_balance_presupuestario_-_ldf_cpYYYY.xlsx (sheet "F4 BAP")
-Transforms to long format and loads into Postgres using your existing pattern.
-"""
-
+# app/etl_central/assets/balance_presupuestario_cp.py
 import os
 import re
 import uuid
@@ -22,23 +17,25 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 # Reuse your existing client and helpers
 from app.etl_central.connectors.postgresql import PostgreSqlClient
-# These helpers live in your trimestral module; we keep their original names
-from .helpers import (
+from app.etl_central.assets.helpers import (
     extraer_codigo_y_sublabel,
     _normalize_amount_for_cp,
-    clean_amount
+    clean_amount,
 )
-
-
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
+# ---------------------------------------------------------------------
+# File naming (NEW pattern only)
+# ---------------------------------------------------------------------
+# Example: F4_Balance_Presupuestario_LDF_CP2024.xlsx
+CP_FILENAME_TEMPLATE = "F4_Balance_Presupuestario_LDF_CP{year}.xlsx"
+CP_REGEX = re.compile(r"F4_Balance_Presupuestario_LDF_CP(\d{4})\.xlsx$", re.IGNORECASE)
 
 # ---------------------------------------------------------------------
 # Utils
 # ---------------------------------------------------------------------
 def _generate_surrogate_key() -> str:
-
     uuid_part = uuid.uuid4().bytes
     entropy = os.urandom(16)
     raw = uuid_part + entropy
@@ -46,7 +43,7 @@ def _generate_surrogate_key() -> str:
 
 
 def get_target_table(metadata: MetaData) -> Table:
-    """Same target table you use for trimestral; change here only if you want a separate CP table."""
+    """Target table for CP data (leave name as-is unless you want a separate table)."""
     return Table(
         "nuevo_leon_balance_presupuestario_cp",
         metadata,
@@ -59,9 +56,8 @@ def get_target_table(metadata: MetaData) -> Table:
         Column("amount", Float),
     )
 
-
 # ---------------------------------------------------------------------
-# Extraction (CP)
+# Extraction (CP) — NEW name only
 # ---------------------------------------------------------------------
 def extract_cp_data(
     year: int,
@@ -71,18 +67,17 @@ def extract_cp_data(
 ) -> Tuple[pd.DataFrame, Optional[str]]:
     """
     Read the annual cumulative CP file for the given year.
-    Expected name: formato_4_balance_presupuestario_-_ldf_cpYYYY.xlsx
+    NEW naming ONLY: F4_Balance_Presupuestario_LDF_CP{year}.xlsx
     Sheet: 'F4 BAP'
     """
-    cp_filename = f"formato_4_balance_presupuestario_-_ldf_cp{year}.xlsx"
+    filename = CP_FILENAME_TEMPLATE.format(year=year)
 
     if source == "local":
-        # Local path: app/etl_central/assets/data/presupuestos/...
         base_dir = os.path.dirname(os.path.abspath(__file__))
         data_dir = os.path.abspath(os.path.join(base_dir, "..", "data", "presupuestos"))
-        file_path = os.path.join(data_dir, cp_filename)
+        file_path = os.path.join(data_dir, filename)
         if not os.path.exists(file_path):
-            logging.warning("Local file not found: %s", file_path)
+            logging.warning("Local CP file not found: %s", file_path)
             return pd.DataFrame(), None
         try:
             df = pd.read_excel(file_path, sheet_name="F4 BAP", header=None)
@@ -94,41 +89,67 @@ def extract_cp_data(
     elif source == "s3":
         if not bucket_name:
             raise ValueError("bucket_name is required for source='s3'")
-        s3_key = f"{prefix.rstrip('/')}/{cp_filename}"
+
+        s3 = boto3.client("s3")
+        # First try direct path (fast path)
+        s3_key = f"{prefix.rstrip('/')}/{filename}"
         try:
-            s3 = boto3.client("s3")
             obj = s3.get_object(Bucket=bucket_name, Key=s3_key)
             df = pd.read_excel(BytesIO(obj["Body"].read()), sheet_name="F4 BAP", header=None)
             return df, f"s3://{bucket_name}/{s3_key}"
-        except Exception as e:
-            logging.error("Failed to read s3://%s/%s. Error: %s", bucket_name, s3_key, e)
-            return pd.DataFrame(), None
+        except Exception:
+            # Fallback: scan prefix for the exact (case-insensitive) new pattern for this year
+            chosen_key = None
+            paginator = s3.get_paginator("list_objects_v2")
+            for page in paginator.paginate(Bucket=bucket_name, Prefix=prefix.rstrip("/") + "/"):
+                for o in page.get("Contents", []):
+                    key = o["Key"]
+                    fname = key.split("/")[-1]
+                    m = CP_REGEX.match(fname)
+                    if m and int(m.group(1)) == int(year):
+                        chosen_key = key
+                        break
+                if chosen_key:
+                    break
+
+            if not chosen_key:
+                logging.error(
+                    "CP file (NEW name) for year=%s not found in s3://%s/%s. "
+                    "Expected filename: %s",
+                    year, bucket_name, prefix, filename
+                )
+                return pd.DataFrame(), None
+
+            try:
+                obj = s3.get_object(Bucket=bucket_name, Key=chosen_key)
+                df = pd.read_excel(BytesIO(obj["Body"].read()), sheet_name="F4 BAP", header=None)
+                return df, f"s3://{bucket_name}/{chosen_key}"
+            except Exception as e:
+                logging.error("Failed to read s3://%s/%s. Error: %s", bucket_name, chosen_key, e)
+                return pd.DataFrame(), None
 
     else:
         raise ValueError("Invalid source. Use 'local' or 's3'.")
-
 
 def find_all_cp_years(
     bucket_name: str = "centralfiles3",
     prefix: str = "finanzas/Balance_Presupuestario_CP/raw/",
 ) -> List[int]:
     """
-    List all available CP YEARS in S3.
-    Pattern: formato_4_balance_presupuestario_-_ldf_cpYYYY.xlsx
+    List all available CP YEARS in S3 using the NEW naming only:
+      F4_Balance_Presupuestario_LDF_CPYYYY.xlsx
     """
     s3 = boto3.client("s3")
     paginator = s3.get_paginator("list_objects_v2")
-    pattern = re.compile(r"formato_4_balance_presupuestario_-_ldf_cp(\d{4})\.xlsx", re.IGNORECASE)
 
     years: List[int] = []
     for page in paginator.paginate(Bucket=bucket_name, Prefix=prefix):
         for obj in page.get("Contents", []):
-            filename = obj["Key"].split("/")[-1]
-            m = pattern.match(filename)
+            fname = obj["Key"].split("/")[-1]
+            m = CP_REGEX.match(fname)
             if m:
                 years.append(int(m.group(1)))
     return sorted(set(years))
-
 
 # ---------------------------------------------------------------------
 # Transform (CP)
@@ -136,7 +157,11 @@ def find_all_cp_years(
 def transform_cp_data(df: pd.DataFrame, year: int) -> pd.DataFrame:
     """
     Transform CP (annual cumulative) sheet into long format ready for loading.
-    Output:
+    Uses the same logic as trimestral with minimal changes:
+      - year_quarter = f"{year}_CP"
+      - full_date    = f"{year}-12-31"
+
+    Output columns:
       surrogate_key, concept, sublabel, year_quarter, full_date, type, amount
     """
     if df.empty:
@@ -150,12 +175,12 @@ def transform_cp_data(df: pd.DataFrame, year: int) -> pd.DataFrame:
     year_quarter = f"{year}_CP"
     full_date = f"{year}-12-31"
 
-    # 1) keep only detailed codes (exclude aggregates like "A.", "B.", etc.)
+    # 1) keep only detailed codes (exclude A., B., C., etc. aggregates)
     pattern = r"^(A[123]|B[12]|C[12]|E[12]|F[12]|G[12])\."
     mask = df[1].astype(str).str.match(pattern, na=False)
     df_codes = df[mask].copy()
 
-    # 2) deduplicate by code (keep first)
+    # 2) deduplicate by code (keep first occurrence)
     df_codes["code"] = df_codes[1].str.extract(pattern)
     df_unique = df_codes.drop_duplicates(subset="code", keep="first").drop(columns="code")
 
@@ -163,7 +188,7 @@ def transform_cp_data(df: pd.DataFrame, year: int) -> pd.DataFrame:
     df_final = df_unique.iloc[:, 1:].reset_index(drop=True)
     df_final.columns = ["raw_concept", "estimated_or_approved", "devengado", "recaudado_pagado"]
 
-    # 4) split concept/sublabel using helper
+    # 4) split concept/sublabel
     df_final[["concept", "sublabel"]] = df_final["raw_concept"].apply(
         lambda x: pd.Series(extraer_codigo_y_sublabel(str(x)))
     )
@@ -187,26 +212,18 @@ def transform_cp_data(df: pd.DataFrame, year: int) -> pd.DataFrame:
     df_long["full_date"] = full_date
     df_long = df_long[["concept", "sublabel", "year_quarter", "full_date", "type", "amount"]]
 
-    # 8) clean amounts
+    # 8) final amount cleanup with shared helper, ensure NaN -> None
     df_long["amount"] = df_long["amount"].apply(clean_amount)
-
-    # 8.1) IMPORTANT: keep None as None (not NaN) so tests pass and DB gets NULL
-    # Cast to object first so pandas won't coerce None back to NaN via float dtype
-    df_long["amount"] = df_long["amount"].astype(object)
-    df_long.loc[pd.isna(df_long["amount"]), "amount"] = None
+    df_long["amount"] = df_long["amount"].map(lambda v: None if pd.isna(v) else v)
 
     # 9) surrogate key and final order
     df_long["surrogate_key"] = [_generate_surrogate_key() for _ in range(len(df_long))]
-    df_long = df_long[[
-        "surrogate_key", "concept", "sublabel", "year_quarter", "full_date", "type", "amount"
-    ]]
+    df_long = df_long[["surrogate_key", "concept", "sublabel", "year_quarter", "full_date", "type", "amount"]]
 
     return df_long
 
-
-
 # ---------------------------------------------------------------------
-# Load (same pattern you already use)
+# Load helpers
 # ---------------------------------------------------------------------
 def load(
     df: pd.DataFrame,

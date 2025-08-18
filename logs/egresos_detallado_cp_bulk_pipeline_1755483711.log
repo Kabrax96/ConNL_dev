@@ -1,0 +1,12 @@
+2025-08-17 20:21:51,492 - egresos_detallado_cp_bulk_pipeline - INFO - 100 | Starting Egresos Detallado CP bulk pipeline run
+2025-08-17 20:21:51,492 - egresos_detallado_cp_bulk_pipeline - INFO - 105 | Using hardcoded CP_S3_PREFIX='finanzas/Egresos_Detallado_CP/raw/'
+2025-08-17 20:21:51,816 - egresos_detallado_cp_bulk_pipeline - INFO - 115 | Years detected under s3://centralfiles3/finanzas/Egresos_Detallado_CP/raw/: [2020]
+2025-08-17 20:21:51,817 - egresos_detallado_cp_bulk_pipeline - INFO - 120 | Processing CP year=2020
+2025-08-17 20:21:51,817 - egresos_detallado_cp_bulk_pipeline - INFO - 200 | Extracting CP Egresos Detallado from S3
+2025-08-17 20:21:52,285 - egresos_detallado_cp_bulk_pipeline - INFO - 210 | Extracted rows: 167 from s3://centralfiles3/finanzas/Egresos_Detallado_CP/raw/F6_a_EAPED_Clas_Obj_Gas_LDF_CP2020.xlsx
+2025-08-17 20:21:52,285 - egresos_detallado_cp_bulk_pipeline - INFO - 300 | Transforming CP Egresos Detallado
+2025-08-17 20:21:52,291 - egresos_detallado_cp_bulk_pipeline - INFO - 310 | Transformed rows (year=2020): 126
+2025-08-17 20:21:52,291 - egresos_detallado_cp_bulk_pipeline - INFO - 320 | Final concatenated rows: 126
+2025-08-17 20:21:52,291 - egresos_detallado_cp_bulk_pipeline - INFO - 400 | Preparing DB objects
+2025-08-17 20:21:52,292 - egresos_detallado_cp_bulk_pipeline - INFO - 410 | Bulk loading into PostgreSQL (TRUNCATE + INSERT)
+2025-08-17 20:22:19,935 - egresos_detallado_cp_bulk_pipeline - INFO - 499 | Egresos CP bulk pipeline run successful

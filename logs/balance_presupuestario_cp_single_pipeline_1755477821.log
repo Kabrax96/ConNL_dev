@@ -1,0 +1,11 @@
+2025-08-17 18:43:41,531 - balance_presupuestario_cp_single_pipeline - INFO - 100 | Starting CP single pipeline run
+2025-08-17 18:43:41,531 - balance_presupuestario_cp_single_pipeline - INFO - 105 | Using hardcoded CP_S3_PREFIX='finanzas/Balance_Presupuestario_CP/raw/'
+2025-08-17 18:43:41,896 - balance_presupuestario_cp_single_pipeline - INFO - 115 | Years detected under s3://centralfiles3/finanzas/Balance_Presupuestario_CP/raw/: [2020]
+2025-08-17 18:43:41,896 - balance_presupuestario_cp_single_pipeline - INFO - 120 | Latest CP year detected: 2020
+2025-08-17 18:43:41,896 - balance_presupuestario_cp_single_pipeline - INFO - 200 | Extracting CP data from S3
+2025-08-17 18:43:43,047 - balance_presupuestario_cp_single_pipeline - INFO - 210 | Extracted rows: 71 from s3://centralfiles3/finanzas/Balance_Presupuestario_CP/raw/formato_4_balance_presupuestario_-_ldf_cp2020.xlsx
+2025-08-17 18:43:43,047 - balance_presupuestario_cp_single_pipeline - INFO - 300 | Transforming CP data
+2025-08-17 18:43:43,055 - balance_presupuestario_cp_single_pipeline - INFO - 310 | Transformed rows: 39
+2025-08-17 18:43:43,055 - balance_presupuestario_cp_single_pipeline - INFO - 400 | Preparing DB objects
+2025-08-17 18:43:43,056 - balance_presupuestario_cp_single_pipeline - INFO - 410 | Loading CP data into PostgreSQL (upsert)
+2025-08-17 18:43:45,508 - balance_presupuestario_cp_single_pipeline - INFO - 499 | Load completed successfully
