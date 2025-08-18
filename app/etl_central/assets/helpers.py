@@ -1,9 +1,6 @@
 import re
 import pandas as pd
-
-import re
-import pandas as pd
-
+from typing import Optional, Tuple, List
 
 def _normalize_amount_for_cp(val):
     """
@@ -90,3 +87,44 @@ def clean_amount(val):
         return float(s)
     except Exception:
         return None
+
+
+def _first_match_row(df: pd.DataFrame, patterns: List[re.Pattern], max_scan_cols: int = 8, start_row: int = 0) -> Optional[int]:
+    """
+    Devuelve el primer índice de fila donde alguno de los patrones hace match
+    en cualquiera de las primeras 'max_scan_cols' columnas (desde start_row).
+    """
+    lo = start_row
+    hi = df.shape[0]
+    maxc = min(max_scan_cols, df.shape[1])
+    for r in range(lo, hi):
+        for c in range(0, maxc):
+            val = str(df.iat[r, c]).strip()
+            for rx in patterns:
+                if rx.search(val):
+                    return r
+    return None
+
+def _find_section_ii_bounds(df: pd.DataFrame) -> Tuple[Optional[int], Optional[int]]:
+    """
+    Devuelve (start_ii, end_ii_exclusive):
+      * start_ii = fila del título "Transferencias Federales Etiquetadas" o, si existe, la que diga "II."
+      * end_ii   = fila donde arranca "Ingresos Derivados de Financiamientos" (excluyente)
+    Si no se encuentra alguno, devuelve None en su lugar.
+    """
+    rx_roman_ii = re.compile(r"^\s*II\.\s*$", re.IGNORECASE)
+    rx_ii_title = re.compile(r"transferencias\s+federales\s+etiquetadas[:\.]?$", re.IGNORECASE)
+    rx_financ = re.compile(r"ingresos\s+derivados\s+de\s+financiamientos", re.IGNORECASE)
+    rx_financ_short = re.compile(r"derivados\s+de\s+financiamientos", re.IGNORECASE)
+
+    # Preferimos el título explícito; si no, usamos "II."
+    start_ii = _first_match_row(df, [rx_ii_title], max_scan_cols=8)
+    if start_ii is None:
+        start_ii = _first_match_row(df, [rx_roman_ii], max_scan_cols=6)
+
+    # Fin = primera ocurrencia de "Ingresos Derivados de Financiamientos" después de start_ii
+    end_ii = None
+    if start_ii is not None:
+        end_ii = _first_match_row(df, [rx_financ, rx_financ_short], max_scan_cols=8, start_row=start_ii + 1)
+
+    return start_ii, end_ii

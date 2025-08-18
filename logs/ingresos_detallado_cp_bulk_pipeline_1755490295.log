@@ -1,0 +1,12 @@
+2025-08-17 22:11:36,057 - ingresos_detallado_cp_bulk_pipeline - INFO - 100 | Starting Ingresos Detallado CP bulk pipeline run
+2025-08-17 22:11:36,057 - ingresos_detallado_cp_bulk_pipeline - INFO - 105 | Using hardcoded CP_S3_PREFIX='finanzas/Ingresos_Detallado_CP/raw/'
+2025-08-17 22:11:36,484 - ingresos_detallado_cp_bulk_pipeline - INFO - 115 | Years detected under s3://centralfiles3/finanzas/Ingresos_Detallado_CP/raw/: [2020]
+2025-08-17 22:11:36,485 - ingresos_detallado_cp_bulk_pipeline - INFO - 120 | Processing CP year=2020
+2025-08-17 22:11:36,485 - ingresos_detallado_cp_bulk_pipeline - INFO - 200 | Extracting CP Ingresos Detallado from S3
+2025-08-17 22:11:37,057 - ingresos_detallado_cp_bulk_pipeline - INFO - 210 | Extracted rows: 84 from s3://centralfiles3/finanzas/Ingresos_Detallado_CP/raw/F5_Edo_Ana_Ing_Det_LDF_CP2020.xlsx
+2025-08-17 22:11:37,057 - ingresos_detallado_cp_bulk_pipeline - INFO - 300 | Transforming CP Ingresos Detallado
+2025-08-17 22:11:37,069 - ingresos_detallado_cp_bulk_pipeline - INFO - 310 | Transformed rows (year=2020): 67
+2025-08-17 22:11:37,070 - ingresos_detallado_cp_bulk_pipeline - INFO - 320 | Final concatenated rows: 67
+2025-08-17 22:11:37,070 - ingresos_detallado_cp_bulk_pipeline - INFO - 400 | Preparing DB objects
+2025-08-17 22:11:37,070 - ingresos_detallado_cp_bulk_pipeline - INFO - 410 | Bulk loading into PostgreSQL (TRUNCATE + INSERT)
+2025-08-17 22:11:55,039 - ingresos_detallado_cp_bulk_pipeline - INFO - 499 | Ingresos CP bulk pipeline run successful

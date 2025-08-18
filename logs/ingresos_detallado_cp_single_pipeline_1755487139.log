@@ -1,0 +1,11 @@
+2025-08-17 21:18:59,444 - ingresos_detallado_cp_single_pipeline - INFO - 100 | Starting Ingresos Detallado CP single pipeline run
+2025-08-17 21:18:59,444 - ingresos_detallado_cp_single_pipeline - INFO - 105 | Using hardcoded CP_S3_PREFIX='finanzas/Ingresos_Detallado_CP/raw/'
+2025-08-17 21:19:00,740 - ingresos_detallado_cp_single_pipeline - INFO - 115 | Years detected under s3://centralfiles3/finanzas/Ingresos_Detallado_CP/raw/: [2020]
+2025-08-17 21:19:00,741 - ingresos_detallado_cp_single_pipeline - INFO - 120 | Latest CP year detected: 2020
+2025-08-17 21:19:00,741 - ingresos_detallado_cp_single_pipeline - INFO - 200 | Extracting CP Ingresos Detallado from S3
+2025-08-17 21:19:01,546 - ingresos_detallado_cp_single_pipeline - INFO - 210 | Extracted rows: 84 from s3://centralfiles3/finanzas/Ingresos_Detallado_CP/raw/F5_Edo_Ana_Ing_Det_LDF_CP2020.xlsx
+2025-08-17 21:19:01,547 - ingresos_detallado_cp_single_pipeline - INFO - 300 | Transforming CP Ingresos Detallado
+2025-08-17 21:19:01,606 - ingresos_detallado_cp_single_pipeline - INFO - 310 | Transformed rows: 67
+2025-08-17 21:19:01,607 - ingresos_detallado_cp_single_pipeline - INFO - 400 | Preparing DB objects
+2025-08-17 21:19:01,610 - ingresos_detallado_cp_single_pipeline - INFO - 410 | Loading CP data into PostgreSQL (upsert)
+2025-08-17 21:19:04,192 - ingresos_detallado_cp_single_pipeline - INFO - 499 | Load completed successfully
