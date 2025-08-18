@@ -4,7 +4,7 @@ CP_RE = re.compile(r"formato_4_balance_presupuestario_-_ldf_cp(\d{4})\.xlsx", re
 
 def test_s3_list_and_match_cp_prefix():
     bucket = os.getenv("BUCKET_NAME", "centralfiles3")
-    prefix = "finanzas/Balance_Presupuestario/raw/"
+    prefix = "finanzas/Balance_Presupuestario_CP/raw/"
     s3 = boto3.client("s3")
 
     pages = s3.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=prefix)
@@ -18,7 +18,7 @@ def test_s3_list_and_match_cp_prefix():
 
 def test_s3_can_read_single_cp_file():
     bucket = os.getenv("BUCKET_NAME", "centralfiles3")
-    prefix = "finanzas/Balance_Presupuestario/raw/"
+    prefix = "finanzas/Balance_Presupuestario_CP/raw/"
     s3 = boto3.client("s3")
     # pick first match
     pages = s3.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=prefix)

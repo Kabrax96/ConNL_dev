@@ -1,0 +1,2 @@
+2025-08-17 18:22:58,059 - balance_presupuestario_cp_single_pipeline - INFO - 100 | Starting CP single pipeline run
+2025-08-17 18:22:58,437 - balance_presupuestario_cp_single_pipeline - ERROR - 500 | CP single pipeline run failed: No valid CP Balance Presupuestario file found in S3.

@@ -23,10 +23,13 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 # Reuse your existing client and helpers
 from app.etl_central.connectors.postgresql import PostgreSqlClient
 # These helpers live in your trimestral module; we keep their original names
-from app.etl_central.assets.balance_presupuestario_cp import (
+from .helpers import (
     extraer_codigo_y_sublabel,
-    clean_amount,
+    _normalize_amount_for_cp,
+    clean_amount
 )
+
+
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
@@ -35,15 +38,17 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 # Utils
 # ---------------------------------------------------------------------
 def _generate_surrogate_key() -> str:
-    """High-entropy urlsafe surrogate key (base64 without trailing '=')."""
-    raw = uuid.uuid4().bytes + os.urandom(16)
-    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+
+    uuid_part = uuid.uuid4().bytes
+    entropy = os.urandom(16)
+    raw = uuid_part + entropy
+    return base64.urlsafe_b64encode(raw).rstrip(b'=').decode('ascii')
 
 
 def get_target_table(metadata: MetaData) -> Table:
     """Same target table you use for trimestral; change here only if you want a separate CP table."""
     return Table(
-        "nuevo_leon_balance_presupuestario",
+        "nuevo_leon_balance_presupuestario_cp",
         metadata,
         Column("surrogate_key", String, primary_key=True),
         Column("concept", String),
@@ -62,7 +67,7 @@ def extract_cp_data(
     year: int,
     source: str = "local",  # "local" | "s3"
     bucket_name: Optional[str] = None,
-    prefix: str = "finanzas/Balance_Presupuestario/raw/",
+    prefix: str = "finanzas/Balance_Presupuestario_CP/raw/",
 ) -> Tuple[pd.DataFrame, Optional[str]]:
     """
     Read the annual cumulative CP file for the given year.
@@ -105,7 +110,7 @@ def extract_cp_data(
 
 def find_all_cp_years(
     bucket_name: str = "centralfiles3",
-    prefix: str = "finanzas/Balance_Presupuestario/raw/",
+    prefix: str = "finanzas/Balance_Presupuestario_CP/raw/",
 ) -> List[int]:
     """
     List all available CP YEARS in S3.
@@ -130,57 +135,74 @@ def find_all_cp_years(
 # ---------------------------------------------------------------------
 def transform_cp_data(df: pd.DataFrame, year: int) -> pd.DataFrame:
     """
-    Same logic as trimestral with minimal changes:
-      - year_quarter = f"{year}_CP"
-      - full_date    = f"{year}-12-31"
-    Output columns: surrogate_key, concept, sublabel, year_quarter, full_date, type, amount
+    Transform CP (annual cumulative) sheet into long format ready for loading.
+    Output:
+      surrogate_key, concept, sublabel, year_quarter, full_date, type, amount
     """
     if df.empty:
-        return pd.DataFrame(columns=["surrogate_key", "concept", "sublabel", "year_quarter", "full_date", "type", "amount"])
+        return pd.DataFrame(
+            columns=[
+                "surrogate_key", "concept", "sublabel",
+                "year_quarter", "full_date", "type", "amount"
+            ]
+        )
 
     year_quarter = f"{year}_CP"
     full_date = f"{year}-12-31"
 
-    # Keep the same pattern you use for trimestral (exclude aggregate A., B., C., etc.)
+    # 1) keep only detailed codes (exclude aggregates like "A.", "B.", etc.)
     pattern = r"^(A[123]|B[12]|C[12]|E[12]|F[12]|G[12])\."
     mask = df[1].astype(str).str.match(pattern, na=False)
     df_codes = df[mask].copy()
 
-    # Deduplicate by code
+    # 2) deduplicate by code (keep first)
     df_codes["code"] = df_codes[1].str.extract(pattern)
     df_unique = df_codes.drop_duplicates(subset="code", keep="first").drop(columns="code")
 
-    # Useful columns: col 1 = text; cols 2/3/4 = amounts
+    # 3) select useful columns: col 1 = text; cols 2/3/4 = amounts
     df_final = df_unique.iloc[:, 1:].reset_index(drop=True)
     df_final.columns = ["raw_concept", "estimated_or_approved", "devengado", "recaudado_pagado"]
 
-    # Split concept/sublabel using your existing helper
+    # 4) split concept/sublabel using helper
     df_final[["concept", "sublabel"]] = df_final["raw_concept"].apply(
         lambda x: pd.Series(extraer_codigo_y_sublabel(str(x)))
     )
     df_final.drop(columns=["raw_concept"], inplace=True)
 
-    # Long format
+    # 5) normalize accounting formats BEFORE cleaning ((), trailing minus, unicode minus)
+    amount_cols = ["estimated_or_approved", "devengado", "recaudado_pagado"]
+    for c in amount_cols:
+        df_final[c] = df_final[c].map(_normalize_amount_for_cp)
+
+    # 6) long format
     df_long = df_final.melt(
         id_vars=["concept", "sublabel"],
-        value_vars=["estimated_or_approved", "devengado", "recaudado_pagado"],
+        value_vars=amount_cols,
         var_name="type",
         value_name="amount",
     )
 
+    # 7) period fields
     df_long["year_quarter"] = year_quarter
     df_long["full_date"] = full_date
     df_long = df_long[["concept", "sublabel", "year_quarter", "full_date", "type", "amount"]]
 
-    # Amount cleanup
+    # 8) clean amounts
     df_long["amount"] = df_long["amount"].apply(clean_amount)
 
-    # Surrogate key
-    df_long["surrogate_key"] = [_generate_surrogate_key() for _ in range(len(df_long))]
+    # 8.1) IMPORTANT: keep None as None (not NaN) so tests pass and DB gets NULL
+    # Cast to object first so pandas won't coerce None back to NaN via float dtype
+    df_long["amount"] = df_long["amount"].astype(object)
+    df_long.loc[pd.isna(df_long["amount"]), "amount"] = None
 
-    # Final order
-    df_long = df_long[["surrogate_key", "concept", "sublabel", "year_quarter", "full_date", "type", "amount"]]
+    # 9) surrogate key and final order
+    df_long["surrogate_key"] = [_generate_surrogate_key() for _ in range(len(df_long))]
+    df_long = df_long[[
+        "surrogate_key", "concept", "sublabel", "year_quarter", "full_date", "type", "amount"
+    ]]
+
     return df_long
+
 
 
 # ---------------------------------------------------------------------

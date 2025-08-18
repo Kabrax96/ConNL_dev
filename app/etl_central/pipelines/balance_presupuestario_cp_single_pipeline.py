@@ -9,8 +9,8 @@ from app.etl_central.assets.balance_presupuestario_cp import (
     transform_cp_data,
     get_target_table,
 )
-from app.etl_central.assets.balance_presupuestario import (
-    generate_surrogate_key,  # reuse your existing helper
+from app.etl_central.assets.balance_presupuestario_cp import (
+    _generate_surrogate_key,  # reuse your existing helper
 )
 from app.etl_central.assets.pipeline_logging import PipelineLogging
 from app.etl_central.assets.metadata_logging import MetaDataLogging, MetaDataLoggingStatus
@@ -72,7 +72,7 @@ def pipeline(pipeline_logging: PipelineLogging):
     transformed_df = transform_cp_data(extracted_df, year)
 
     # If your transform already assigns surrogate_key, you can skip the next line.
-    transformed_df = generate_surrogate_key(transformed_df)
+    #transformed_df = _generate_surrogate_key(transformed_df)
     pipeline_logging.logger.info(f"310 | Transformed rows: {transformed_df.shape[0]}")
 
     # 4) Load (UPSERT)
